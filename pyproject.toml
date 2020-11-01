@@ -6,6 +6,8 @@ authors = ["Ben Simms <ben@bensimms.moe>"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
+psutil = "^5.7.3"
+objgraph = "^3.5.0"
 
 [tool.poetry.dev-dependencies]
 

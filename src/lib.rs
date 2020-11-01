@@ -1,6 +1,7 @@
 use file_descriptors::eventfd::EventFileDescriptor;
 use pyo3::prelude::*;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     mpsc::{Receiver, Sender},
     Arc,
@@ -9,8 +10,9 @@ use std::time::Duration;
 
 #[pyclass]
 struct QueueReceiver {
-    pub q: Receiver<i32>,
+    pub q: Receiver<(u32, i32)>,
     pub e: Arc<EventFileDescriptor>,
+    pub stopped: Arc<AtomicBool>,
 }
 
 #[pymethods]
@@ -38,13 +40,29 @@ impl QueueReceiver {
 
         r
     }
+
+    fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
-async fn append_task(s: Sender<i32>, e: Arc<EventFileDescriptor>) {
-    for i in 0i32..1000 {
-        s.send(i).unwrap();
+async fn append_task(
+    task_idx: u32,
+    interval: u64,
+    s: Sender<(u32, i32)>,
+    e: Arc<EventFileDescriptor>,
+    stopped: Arc<AtomicBool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(interval));
+    for i in 0i32.. {
+        if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+
+        interval.tick().await;
+        s.send((task_idx, i)).unwrap();
         e.write(&1).unwrap();
-        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -61,24 +79,45 @@ struct TokioRT {
     pub rt: tokio::runtime::Runtime,
 }
 
+fn number_of_cpus() -> usize {
+    usize::max(1, num_cpus::get())
+}
+
 #[pyfunction]
 fn create_rt() -> TokioRT {
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let num_cpus = number_of_cpus();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(num_cpus)
+        .enable_all()
+        .thread_name("testing-async-tokio-worker")
+        .build()
+        .unwrap();
+
     TokioRT { rt }
 }
 
 #[pyfunction]
-fn launch_appenders(rt: &TokioRT) -> QueueReceiver {
+fn launch_appenders(interval: u64, rt: &TokioRT) -> QueueReceiver {
     let fd = EventFileDescriptor::new(0, false).unwrap();
     let fd = Arc::new(fd);
     let (s, r) = std::sync::mpsc::channel();
+    let stopped = Arc::new(AtomicBool::new(false));
     let qr = QueueReceiver {
         q: r,
         e: fd.clone(),
+        stopped: stopped.clone(),
     };
 
-    let tasks = (0..8)
-        .map(|_| rt.rt.spawn(append_task(s.clone(), fd.clone())))
+    let tasks = (0..number_of_cpus())
+        .map(|i| {
+            rt.rt.spawn(append_task(
+                i as u32,
+                interval,
+                s.clone(),
+                fd.clone(),
+                stopped.clone(),
+            ))
+        })
         .collect();
 
     rt.rt.spawn(close_when_done(tasks, fd));
