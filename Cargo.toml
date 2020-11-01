@@ -17,4 +17,5 @@ default = ["pyo3/extension-module"]
 file-descriptors = "0.9.1"
 num_cpus = "1.13.0"
 pyo3 = "0.12.3"
+rand = "0.7.3"
 tokio = { version = "0.3.2", features = ["sync", "time", "rt", "rt-multi-thread"] }

@@ -76,8 +76,7 @@ async def do_test():
     print_stats(process, dispatches, start)
 
     async def callback(v):
-        (tid, _) = v
-        dispatches[tid] += 1
+        dispatches[v.worker_id] += 1
 
     t = asyncio.create_task(to_test_inner(qr, callback))
     await asyncio.sleep(seconds)

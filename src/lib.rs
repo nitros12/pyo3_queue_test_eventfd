@@ -1,5 +1,6 @@
 use file_descriptors::eventfd::EventFileDescriptor;
 use pyo3::prelude::*;
+use rand::Rng;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::AtomicBool;
 use std::sync::{
@@ -9,8 +10,30 @@ use std::sync::{
 use std::time::Duration;
 
 #[pyclass]
+#[derive(Debug)]
+struct BasicEvent {
+    #[pyo3(get)]
+    channel_id: u64,
+    #[pyo3(get)]
+    message_id: u64,
+    #[pyo3(get)]
+    worker_id: usize,
+}
+
+impl BasicEvent {
+    fn new(worker_id: usize) -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            channel_id: rng.gen(),
+            message_id: rng.gen(),
+            worker_id,
+        }
+    }
+}
+
+#[pyclass]
 struct QueueReceiver {
-    pub q: Receiver<(u32, i32)>,
+    pub q: Receiver<BasicEvent>,
     pub e: Arc<EventFileDescriptor>,
     pub stopped: Arc<AtomicBool>,
 }
@@ -22,9 +45,7 @@ impl QueueReceiver {
         self.e.as_raw_fd()
     }
 
-    fn get_items(&mut self, count: u8) -> Vec<PyObject> {
-        let gil = Python::acquire_gil();
-        let py = gil.python();
+    fn get_items(&mut self, count: u8) -> Vec<BasicEvent> {
         let mut r = Vec::new();
 
         // perform allocation in the interpreter thread
@@ -33,8 +54,7 @@ impl QueueReceiver {
             r.push(
                 self.q
                     .try_recv()
-                    .unwrap_or_else(|_| panic!("Queue shouldn't have been empty here, at={}", i))
-                    .into_py(py),
+                    .unwrap_or_else(|_| panic!("Queue shouldn't have been empty here, at={}", i)),
             )
         }
 
@@ -48,20 +68,20 @@ impl QueueReceiver {
 }
 
 async fn append_task(
-    task_idx: u32,
+    task_idx: usize,
     interval: u64,
-    s: Sender<(u32, i32)>,
+    s: Sender<BasicEvent>,
     e: Arc<EventFileDescriptor>,
     stopped: Arc<AtomicBool>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(interval));
-    for i in 0i32.. {
+    for _i in 0i32.. {
         if stopped.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
 
         interval.tick().await;
-        s.send((task_idx, i)).unwrap();
+        s.send(BasicEvent::new(task_idx)).unwrap();
         e.write(&1).unwrap();
     }
 }
@@ -111,7 +131,7 @@ fn launch_appenders(interval: u64, rt: &TokioRT) -> QueueReceiver {
     let tasks = (0..number_of_cpus())
         .map(|i| {
             rt.rt.spawn(append_task(
-                i as u32,
+                i,
                 interval,
                 s.clone(),
                 fd.clone(),
